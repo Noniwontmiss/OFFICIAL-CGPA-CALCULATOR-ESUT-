@@ -33,10 +33,7 @@ Open http://localhost:3000.
 
 ## Next planned features
 
-- ESUT department/programme presets
 - Course database
-- Import/export results
-- PDF result report
 - CGPA target calculator
 - What-if grade simulator
 - Cloud accounts with Supabase

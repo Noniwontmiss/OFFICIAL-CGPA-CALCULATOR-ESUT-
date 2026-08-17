@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import type { ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { ChangeEvent, ReactNode } from "react";
 import {
   AlertCircle,
   BookOpen,
@@ -15,6 +15,7 @@ import {
   RotateCcw,
   Sparkles,
   Trash2,
+  Upload,
   X,
 } from "lucide-react";
 import {
@@ -49,6 +50,7 @@ export default function Home() {
   const [showCourseModal, setShowCourseModal] = useState(false);
   const [selectedCourseId, setSelectedCourseId] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
+  const importInputRef = useRef<HTMLInputElement>(null);
 
   // Initialize view from the first existing record (if any) so existing data is shown
   useEffect(() => {
@@ -174,6 +176,184 @@ export default function Home() {
     localStorage.setItem("esut-cgpa-records", JSON.stringify(records));
     flash("success", "Academic record saved on this device.");
     return true;
+  }
+
+  function exportData() {
+    const payload = {
+      app: "ESUT CGPA Calculator",
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      records,
+    };
+
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "ESUT-CGPA-Backup.json";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1500);
+
+    flash("success", "Backup exported successfully.");
+  }
+
+  function isValidGrade(value: unknown): value is Grade {
+    return typeof value === "string" && value in GRADE_POINTS;
+  }
+
+  function isValidLevel(value: unknown): value is string {
+    return typeof value === "string" && (LEVELS as readonly string[]).includes(value);
+  }
+
+  function isValidSemesterName(value: unknown): value is SemesterName {
+    return typeof value === "string" && (SEMESTERS as readonly string[]).includes(value);
+  }
+
+  function sanitizeImportedRecords(raw: unknown): Semester[] | null {
+    if (!raw || typeof raw !== "object") return null;
+
+    const root = raw as Record<string, unknown>;
+    const list = Array.isArray(root.records) ? root.records : Array.isArray(raw) ? raw : null;
+    if (!list) return null;
+
+    const seen = new Set<string>();
+    const clean: Semester[] = [];
+
+    for (const item of list) {
+      if (!item || typeof item !== "object") continue;
+      const rec = item as Record<string, unknown>;
+
+      if (!isValidLevel(rec.level) || !isValidSemesterName(rec.semester)) continue;
+
+      const coursesRaw = Array.isArray(rec.courses) ? rec.courses : [];
+      const courses: Course[] = [];
+
+      for (const c of coursesRaw) {
+        if (!c || typeof c !== "object") continue;
+        const course = c as Record<string, unknown>;
+
+        const code = typeof course.code === "string" ? course.code.trim().toUpperCase() : "";
+        if (!code) continue;
+
+        const creditUnit = Number(course.creditUnit);
+        if (!Number.isFinite(creditUnit) || creditUnit < 1 || creditUnit > 10) continue;
+
+        if (!isValidGrade(course.grade)) continue;
+
+        const title = typeof course.title === "string" ? course.title.trim() : "";
+        const id =
+          typeof course.id === "string" && course.id
+            ? course.id
+            : `course-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+
+        courses.push({
+          id,
+          code,
+          title,
+          creditUnit,
+          grade: course.grade,
+        });
+      }
+
+      const key = `${rec.level}-${rec.semester}`;
+      if (seen.has(key)) {
+        // Merge courses into existing semester record (dedupe by id if possible)
+        const existing = clean.find((r) => semesterKey(r) === key);
+        if (existing) {
+          const existingIds = new Set(existing.courses.map((c) => c.id));
+          for (const course of courses) {
+            if (!existingIds.has(course.id)) {
+              existing.courses.push(course);
+              existingIds.add(course.id);
+            }
+          }
+        }
+        continue;
+      }
+
+      seen.add(key);
+      const id =
+        typeof rec.id === "string" && rec.id
+          ? rec.id
+          : `sem-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+
+      clean.push({
+        id,
+        level: rec.level,
+        semester: rec.semester,
+        courses,
+      });
+    }
+
+    // Only accept if we got a sensible structure (or empty is fine)
+    return clean;
+  }
+
+  async function handleImportFile(file: File) {
+    try {
+      const text = await file.text();
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        flash("error", "Invalid backup file. Please select a valid ESUT CGPA Calculator backup.");
+        return;
+      }
+
+      const cleaned = sanitizeImportedRecords(parsed);
+      if (cleaned === null) {
+        flash("error", "Invalid backup file. Please select a valid ESUT CGPA Calculator backup.");
+        return;
+      }
+
+      // Extra validation via existing validator if present
+      const errors = validateRecords(cleaned);
+      if (errors.length) {
+        flash("error", "Invalid backup file. Please select a valid ESUT CGPA Calculator backup.");
+        return;
+      }
+
+      const confirmed = window.confirm(
+        "Importing this backup will replace your current academic records. Continue?"
+      );
+      if (!confirmed) return;
+
+      setRecords(cleaned);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(cleaned));
+      localStorage.setItem("esut-cgpa-records", JSON.stringify(cleaned));
+
+      // Reset view to first available record or defaults
+      if (cleaned.length > 0) {
+        const orderedImport = sortRecords(cleaned);
+        const first = orderedImport[0];
+        setViewLevel(first.level);
+        setViewSemester(first.semester);
+      } else {
+        setViewLevel("100L");
+        setViewSemester("First Semester");
+      }
+      setSelectedCourseId(null);
+
+      flash("success", "Academic records imported successfully.");
+    } catch {
+      flash("error", "Invalid backup file. Please select a valid ESUT CGPA Calculator backup.");
+    }
+  }
+
+  function onImportClick() {
+    importInputRef.current?.click();
+  }
+
+  function onImportChange(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    // Reset so the same file can be selected again later
+    e.target.value = "";
+    if (!file) return;
+    void handleImportFile(file);
   }
 
   async function exportPDF() {
@@ -337,11 +517,27 @@ export default function Home() {
 
           <div className="flex items-center gap-2">
             <button
+              onClick={exportData}
+              aria-label="Export Data"
+              className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-bold text-slate-700 shadow-sm transition hover:bg-slate-50"
+            >
+              <Download size={16} />
+              <span className="hidden sm:inline">Export Data</span>
+            </button>
+            <button
+              onClick={onImportClick}
+              aria-label="Import Data"
+              className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-bold text-slate-700 shadow-sm transition hover:bg-slate-50"
+            >
+              <Upload size={16} />
+              <span className="hidden sm:inline">Import Data</span>
+            </button>
+            <button
               onClick={exportPDF}
               disabled={exporting}
               className="inline-flex items-center gap-2 rounded-xl bg-slate-950 px-3.5 py-2.5 text-sm font-bold text-white shadow-sm transition hover:bg-slate-800 disabled:opacity-60"
             >
-              <Download size={16} />
+              <FileText size={16} />
               <span className="hidden sm:inline">
                 {exporting ? "Creating PDF..." : "Save & PDF"}
               </span>
@@ -353,6 +549,13 @@ export default function Home() {
             >
               <RotateCcw size={17} />
             </button>
+            <input
+              ref={importInputRef}
+              type="file"
+              accept="application/json,.json"
+              className="hidden"
+              onChange={onImportChange}
+            />
           </div>
         </div>
       </header>

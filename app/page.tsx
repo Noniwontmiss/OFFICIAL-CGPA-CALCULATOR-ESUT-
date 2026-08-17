@@ -62,7 +62,7 @@ export default function Home() {
   const [cloudReady, setCloudReady] = useState(false);
   const supabaseRef = useRef<ReturnType<typeof createClient> | null>(null);
   const hydrationDoneRef = useRef(false);
-  const saveTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
+  const saveTimerRef = useRef<number | null>(null);
 
   function getSupabase() {
     if (!supabaseRef.current) supabaseRef.current = createClient();

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createClient } from "../lib/supabase/client";
 import type { ChangeEvent, ReactNode } from "react";
 import {
   AlertCircle,
@@ -11,6 +12,8 @@ import {
   Download,
   FileText,
   GraduationCap,
+  LogIn,
+  LogOut,
   Plus,
   RotateCcw,
   Sparkles,
@@ -52,6 +55,20 @@ export default function Home() {
   const [exporting, setExporting] = useState(false);
   const importInputRef = useRef<HTMLInputElement>(null);
 
+  // Supabase authentication/cloud sync
+  const [user, setUser] = useState<any>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
+  const [cloudReady, setCloudReady] = useState(false);
+  const supabaseRef = useRef<ReturnType<typeof createClient> | null>(null);
+  const hydrationDoneRef = useRef(false);
+  const saveTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
+
+  function getSupabase() {
+    if (!supabaseRef.current) supabaseRef.current = createClient();
+    return supabaseRef.current;
+  }
+
   // Initialize view from the first existing record (if any) so existing data is shown
   useEffect(() => {
     if (records.length === 0) return;
@@ -62,6 +79,188 @@ export default function Home() {
       setViewSemester(first.semester);
     }
   }, []); // run once on mount
+
+  // Restore Supabase session, load this user's cloud records, and keep profile data up to date.
+  useEffect(() => {
+    let mounted = true;
+    const supabase = getSupabase();
+
+    async function initialiseAuth() {
+      const { data: { user: currentUser } } = await supabase.auth.getUser();
+      if (!mounted) return;
+
+      setUser(currentUser ?? null);
+
+      if (currentUser) {
+        await hydrateFromCloud(currentUser.id, currentUser);
+      } else {
+        hydrationDoneRef.current = true;
+        setCloudReady(false);
+      }
+
+      setAuthLoading(false);
+    }
+
+    void initialiseAuth();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (!mounted) return;
+      const nextUser = session?.user ?? null;
+      setUser(nextUser);
+
+      if (event === "SIGNED_IN" && nextUser) {
+        void hydrateFromCloud(nextUser.id, nextUser);
+      } else if (event === "SIGNED_OUT") {
+        hydrationDoneRef.current = true;
+        setCloudReady(false);
+      }
+    });
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+      if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
+    };
+  }, []);
+
+  async function hydrateFromCloud(userId: string, currentUser: any) {
+    const supabase = getSupabase();
+
+    try {
+      const { data: cloud, error } = await supabase
+        .from("academic_records")
+        .select("records")
+        .eq("user_id", userId)
+        .maybeSingle();
+
+      if (error) throw error;
+
+      const localRecords = loadRecords();
+
+      if (cloud?.records && Array.isArray(cloud.records) && cloud.records.length > 0) {
+        const cleaned = validateAndCleanRecords(cloud.records);
+        setRecords(cleaned);
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(cleaned));
+        localStorage.setItem("esut-cgpa-records", JSON.stringify(cleaned));
+      } else if (localRecords.length > 0) {
+        // First cloud login: preserve existing local records instead of overwriting them with empty data.
+        const { error: saveError } = await supabase
+          .from("academic_records")
+          .upsert(
+            { user_id: userId, records: localRecords, updated_at: new Date().toISOString() },
+            { onConflict: "user_id" }
+          );
+        if (saveError) throw saveError;
+      } else {
+        await supabase
+          .from("academic_records")
+          .upsert(
+            { user_id: userId, records: [], updated_at: new Date().toISOString() },
+            { onConflict: "user_id" }
+          );
+      }
+
+      await supabase
+        .from("profiles")
+        .upsert(
+          {
+            id: userId,
+            full_name:
+              currentUser.user_metadata?.full_name ||
+              currentUser.user_metadata?.name ||
+              currentUser.email ||
+              null,
+            avatar_url: currentUser.user_metadata?.avatar_url || null,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: "id" }
+        );
+
+      setCloudReady(true);
+      hydrationDoneRef.current = true;
+    } catch (error) {
+      console.error("Supabase hydration failed:", error);
+      hydrationDoneRef.current = true;
+      setCloudReady(false);
+      flash("error", "Couldn't sync your records. Your local data is still safe.");
+    }
+  }
+
+  function validateAndCleanRecords(value: unknown): Semester[] {
+    if (!Array.isArray(value)) return [];
+    try {
+      const candidate = value as Semester[];
+      const errors = validateRecords(candidate);
+      return errors.length === 0 ? sortRecords(candidate) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  // Debounced cloud persistence. Local storage remains the immediate/offline fallback.
+  useEffect(() => {
+    if (!hydrationDoneRef.current || !user || !cloudReady) return;
+
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+    localStorage.setItem("esut-cgpa-records", JSON.stringify(records));
+
+    if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
+
+    saveTimerRef.current = window.setTimeout(async () => {
+      setSyncing(true);
+      try {
+        const supabase = getSupabase();
+        const { error } = await supabase
+          .from("academic_records")
+          .upsert(
+            { user_id: user.id, records, updated_at: new Date().toISOString() },
+            { onConflict: "user_id" }
+          );
+
+        if (error) throw error;
+      } catch (error) {
+        console.error("Supabase save failed:", error);
+        flash("error", "Couldn't sync your records. Your local data is still safe.");
+      } finally {
+        setSyncing(false);
+      }
+    }, 700);
+
+    return () => {
+      if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
+    };
+  }, [records, user, cloudReady]);
+
+  async function signInWithGoogle() {
+    try {
+      const supabase = getSupabase();
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo: `${window.location.origin}/auth/callback`,
+        },
+      });
+      if (error) throw error;
+    } catch (error) {
+      console.error("Google sign-in failed:", error);
+      flash("error", "Google sign-in failed. Please try again.");
+    }
+  }
+
+  async function signOut() {
+    try {
+      const supabase = getSupabase();
+      const { error } = await supabase.auth.signOut();
+      if (error) throw error;
+      setUser(null);
+      setCloudReady(false);
+      hydrationDoneRef.current = true;
+      flash("success", "Signed out successfully.");
+    } catch (error) {
+      console.error("Sign out failed:", error);
+      flash("error", "Couldn't sign out. Please try again.");
+    }
+  }
 
   const ordered = useMemo(() => sortRecords(records), [records]);
   // Active record only if it already exists for the currently viewed level+semester
@@ -542,6 +741,43 @@ export default function Home() {
                 {exporting ? "Creating PDF..." : "Save & PDF"}
               </span>
             </button>
+            {!authLoading && (
+              user ? (
+                <div className="hidden items-center gap-2 rounded-xl border border-slate-200 bg-white px-2.5 py-2 sm:flex">
+                  {user.user_metadata?.avatar_url ? (
+                    <img
+                      src={user.user_metadata.avatar_url}
+                      alt=""
+                      className="h-7 w-7 rounded-full object-cover"
+                    />
+                  ) : (
+                    <div className="grid h-7 w-7 place-items-center rounded-full bg-blue-100 text-xs font-black text-blue-700">
+                      {(user.user_metadata?.full_name || user.email || "U").charAt(0).toUpperCase()}
+                    </div>
+                  )}
+                  <span className="max-w-[120px] truncate text-xs font-bold text-slate-700">
+                    {user.user_metadata?.full_name || user.user_metadata?.name || user.email}
+                  </span>
+                  <button
+                    onClick={signOut}
+                    aria-label="Sign out"
+                    title="Sign out"
+                    className="grid h-7 w-7 place-items-center rounded-lg text-slate-500 transition hover:bg-slate-100 hover:text-slate-900"
+                  >
+                    <LogOut size={15} />
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={signInWithGoogle}
+                  className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-bold text-slate-700 shadow-sm transition hover:bg-slate-50"
+                >
+                  <LogIn size={16} />
+                  <span className="hidden sm:inline">Sign in</span>
+                </button>
+              )
+            )}
+
             <button
               onClick={reset}
               aria-label="Reset"
@@ -586,6 +822,17 @@ export default function Home() {
               </p>
               <p className="mt-1 text-xs font-semibold text-blue-100/70">
                 {classification(totals.gp)}
+              </p>
+              <p className="mt-2 text-[11px] font-bold text-blue-100/60">
+                {authLoading
+                  ? "Checking account..."
+                  : user
+                    ? syncing
+                      ? "Saving to cloud..."
+                      : cloudReady
+                        ? "Cloud sync on"
+                        : "Local backup"
+                    : "Local storage"}
               </p>
             </div>
           </div>

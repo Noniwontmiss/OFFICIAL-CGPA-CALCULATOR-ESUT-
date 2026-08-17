@@ -40,7 +40,9 @@ const STORAGE_KEY = "esut-cgpa-records-v5";
 
 export default function Home() {
   const [records, setRecords] = useState<Semester[]>(() => loadRecords());
-  const [activeId, setActiveId] = useState("");
+  // Navigation view (pure selection — does not create records)
+  const [viewLevel, setViewLevel] = useState<string>("100L");
+  const [viewSemester, setViewSemester] = useState<SemesterName>("First Semester");
   const [notice, setNotice] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [showSemesterModal, setShowSemesterModal] = useState(false);
   const [selectedLevel, setSelectedLevel] = useState<string | null>(null);
@@ -48,15 +50,22 @@ export default function Home() {
   const [selectedCourseId, setSelectedCourseId] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
 
+  // Initialize view from the first existing record (if any) so existing data is shown
   useEffect(() => {
-    if (!activeId && records[0]) setActiveId(records[0].id);
-    if (activeId && !records.some((record) => record.id === activeId)) {
-      setActiveId(records[0]?.id ?? "");
+    if (records.length === 0) return;
+    const orderedInit = sortRecords(records);
+    const first = orderedInit[0];
+    if (first) {
+      setViewLevel(first.level);
+      setViewSemester(first.semester);
     }
-  }, [activeId, records]);
+  }, []); // run once on mount
 
   const ordered = useMemo(() => sortRecords(records), [records]);
-  const active = records.find((record) => record.id === activeId) ?? ordered[0];
+  // Active record only if it already exists for the currently viewed level+semester
+  const active = records.find(
+    (record) => semesterKey(record) === `${viewLevel}-${viewSemester}`
+  ) ?? null;
   const totals = useMemo(() => getCumulativeStats(records), [records]);
   const activeStats = getStats(active?.courses ?? []);
   const selectedCourse = active?.courses.find((course) => course.id === selectedCourseId) ?? null;
@@ -73,27 +82,17 @@ export default function Home() {
     );
   }
 
-  // Academic records are navigation only:
-  // Level -> semester -> that semester's courses.
-  // If a semester has never been opened before, create its empty record once.
+  // Academic records are pure navigation:
+  // Level -> semester -> show that semester's courses (create record only when a course is added).
   function openLevel(level: string) {
     setSelectedLevel(level);
     setShowSemesterModal(true);
   }
 
   function selectSemester(level: string, semester: SemesterName) {
-    const existing = records.find(
-      (record) => semesterKey(record) === `${level}-${semester}`
-    );
-
-    if (existing) {
-      setActiveId(existing.id);
-    } else {
-      const fresh = makeSemester(level, semester);
-      setRecords((prev) => [...prev, fresh]);
-      setActiveId(fresh.id);
-    }
-
+    // Navigation only — never create a semester record here
+    setViewLevel(level);
+    setViewSemester(semester);
     setShowSemesterModal(false);
     setSelectedLevel(null);
     setShowCourseModal(false);
@@ -108,16 +107,10 @@ export default function Home() {
   }
 
   function removeSemester(id: string) {
-    if (records.length === 1) {
-      flash("error", "At least one semester must remain.");
-      return;
-    }
-
     const remaining = records.filter((record) => record.id !== id);
     setRecords(remaining);
-    if (id === activeId) {
-      setActiveId(sortRecords(remaining)[0]?.id ?? "");
-    }
+    // View stays on the same level/semester (now empty if it was the removed one)
+    setSelectedCourseId(null);
   }
 
   function updateCourse(courseId: string, patch: Partial<Course>) {
@@ -130,7 +123,25 @@ export default function Home() {
   }
 
   function addCourse(course: Course) {
-    if (!active) return;
+    // If this level+semester has no record yet, create it now (only when a course is added)
+    if (!active) {
+      const fresh = makeSemester(viewLevel, viewSemester);
+      const withCourse = { ...fresh, courses: [course] };
+      setRecords((prev) => {
+        // Guard against any possible duplicate
+        const key = semesterKey(withCourse);
+        if (prev.some((r) => semesterKey(r) === key)) {
+          return prev.map((r) =>
+            semesterKey(r) === key ? { ...r, courses: [...r.courses, course] } : r
+          );
+        }
+        return [...prev, withCourse];
+      });
+      setShowCourseModal(false);
+      setSelectedCourseId(course.id);
+      return;
+    }
+
     updateRecord(active.id, { courses: [...active.courses, course] });
     setShowCourseModal(false);
     setSelectedCourseId(course.id);
@@ -140,7 +151,9 @@ export default function Home() {
     if (!active) return;
 
     if (active.courses.length === 1) {
-      flash("error", "Keep at least one course in the semester.");
+      // Removing the last course also removes the semester record
+      setRecords((prev) => prev.filter((record) => record.id !== active.id));
+      setSelectedCourseId(null);
       return;
     }
 
@@ -297,9 +310,9 @@ export default function Home() {
   function reset() {
     if (!window.confirm("Clear the entire academic record? This cannot be undone.")) return;
 
-    const fresh = makeSemester();
-    setRecords([fresh]);
-    setActiveId(fresh.id);
+    setRecords([]);
+    setViewLevel("100L");
+    setViewSemester("First Semester");
     setSelectedCourseId(null);
     localStorage.removeItem(STORAGE_KEY);
     localStorage.removeItem("esut-cgpa-records");
@@ -406,7 +419,7 @@ export default function Home() {
                   key={level}
                   onClick={() => openLevel(level)}
                   className={`rounded-xl border p-3 text-left transition ${
-                    active?.level === level
+                    viewLevel === level
                       ? "border-blue-200 bg-blue-50 shadow-sm"
                       : "border-slate-100 bg-slate-50 hover:border-slate-200 hover:bg-white"
                   }`}
@@ -414,7 +427,7 @@ export default function Home() {
                   <div className="flex items-center justify-between gap-2">
                     <span
                       className={`text-sm font-extrabold ${
-                        active?.level === level ? "text-blue-700" : "text-slate-900"
+                        viewLevel === level ? "text-blue-700" : "text-slate-900"
                       }`}
                     >
                       {level}
@@ -422,7 +435,7 @@ export default function Home() {
                     <ChevronRight
                       size={15}
                       className={
-                        active?.level === level ? "text-blue-600" : "text-slate-400"
+                        viewLevel === level ? "text-blue-600" : "text-slate-400"
                       }
                     />
                   </div>
@@ -452,9 +465,9 @@ export default function Home() {
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2">
-                    <h3 className="text-2xl font-black tracking-tight">{active?.level}</h3>
+                    <h3 className="text-2xl font-black tracking-tight">{viewLevel}</h3>
                     <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-extrabold text-blue-700">
-                      {active?.semester}
+                      {viewSemester}
                     </span>
                   </div>
 
@@ -463,7 +476,7 @@ export default function Home() {
                   </p>
                 </div>
 
-                {active && records.length > 1 && (
+                {active && (
                   <button
                     onClick={() => removeSemester(active.id)}
                     className="inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-bold text-red-500 hover:bg-red-50"
@@ -475,61 +488,65 @@ export default function Home() {
               </div>
             </div>
 
-            {active && (
-              <div className="p-4 sm:p-6">
-                <div className="mb-3 flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-sm font-extrabold text-slate-900">Courses</p>
-                    <p className="text-xs text-slate-400">
-                      {active.courses.length} course{active.courses.length === 1 ? "" : "s"} ·{" "}
-                      {activeStats.totalCU} CU
-                    </p>
-                  </div>
-
-                  <button
-                    onClick={() => setShowCourseModal(true)}
-                    className="inline-flex items-center gap-1.5 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-extrabold text-blue-700 transition hover:bg-blue-100"
-                  >
-                    <Plus size={15} /> Add course
-                  </button>
-                </div>
-
-                <div className="overflow-hidden rounded-2xl border border-slate-200">
-                  <div className="grid grid-cols-[minmax(0,1fr)_70px_80px] bg-gradient-to-r from-blue-600 to-indigo-600 px-4 py-3 text-[10px] font-black uppercase tracking-wider text-white sm:grid-cols-[minmax(0,1fr)_90px_100px]">
-                    <span>Course</span>
-                    <span className="text-center">Unit</span>
-                    <span className="text-center">Grade</span>
-                  </div>
-
-                  <div className="divide-y divide-slate-100">
-                    {active.courses.map((course) => (
-                      <CourseTableRow
-                        key={course.id}
-                        course={course}
-                        onOpen={() => setSelectedCourseId(course.id)}
-                      />
-                    ))}
-
-                    {!active.courses.length && (
-                      <EmptyState text="No courses added yet. Tap Add course to begin this semester." />
+            <div className="p-4 sm:p-6">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-extrabold text-slate-900">Courses</p>
+                  <p className="text-xs text-slate-400">
+                    {active ? (
+                      <>
+                        {active.courses.length} course{active.courses.length === 1 ? "" : "s"} ·{" "}
+                        {activeStats.totalCU} CU
+                      </>
+                    ) : (
+                      "No courses yet"
                     )}
-                  </div>
+                  </p>
                 </div>
 
                 <button
                   onClick={() => setShowCourseModal(true)}
-                  className="fixed bottom-5 right-5 z-30 grid h-14 w-14 place-items-center rounded-full bg-blue-600 text-white shadow-xl shadow-blue-600/30 transition hover:scale-105 hover:bg-blue-700 sm:bottom-7 sm:right-7"
-                  aria-label="Add course"
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-extrabold text-blue-700 transition hover:bg-blue-100"
                 >
-                  <Plus size={26} />
+                  <Plus size={15} /> Add course
                 </button>
+              </div>
 
-                <div className="mt-4 rounded-2xl bg-slate-50 p-4 text-xs leading-5 text-slate-500">
-                  <b className="text-slate-700">Tip:</b> Tap a course code to edit its title,
-                  credit unit or grade.
+              <div className="overflow-hidden rounded-2xl border border-slate-200">
+                <div className="grid grid-cols-[minmax(0,1fr)_70px_80px] bg-gradient-to-r from-blue-600 to-indigo-600 px-4 py-3 text-[10px] font-black uppercase tracking-wider text-white sm:grid-cols-[minmax(0,1fr)_90px_100px]">
+                  <span>Course</span>
+                  <span className="text-center">Unit</span>
+                  <span className="text-center">Grade</span>
+                </div>
+
+                <div className="divide-y divide-slate-100">
+                  {active?.courses.map((course) => (
+                    <CourseTableRow
+                      key={course.id}
+                      course={course}
+                      onOpen={() => setSelectedCourseId(course.id)}
+                    />
+                  ))}
+
+                  {(!active || !active.courses.length) && (
+                    <EmptyState text="No courses added yet. Tap Add course to begin this semester." />
+                  )}
                 </div>
               </div>
-            )}
+
+              <button
+                onClick={() => setShowCourseModal(true)}
+                className="fixed bottom-5 right-5 z-30 grid h-14 w-14 place-items-center rounded-full bg-blue-600 text-white shadow-xl shadow-blue-600/30 transition hover:scale-105 hover:bg-blue-700 sm:bottom-7 sm:right-7"
+                aria-label="Add course"
+              >
+                <Plus size={26} />
+              </button>
+
+              <div className="mt-4 rounded-2xl bg-slate-50 p-4 text-xs leading-5 text-slate-500">
+                <b className="text-slate-700">Tip:</b> Tap a course code to edit its title,
+                credit unit or grade.
+              </div>
+            </div>
           </section>
 
           <aside className="space-y-4">
@@ -662,7 +679,7 @@ export default function Home() {
         />
       )}
 
-      {showCourseModal && active && (
+      {showCourseModal && (
         <CourseModal onClose={() => setShowCourseModal(false)} onAdd={addCourse} />
       )}
 
@@ -1118,7 +1135,7 @@ function SummaryRow({
 }
 
 function loadRecords(): Semester[] {
-  if (typeof window === "undefined") return [makeSemester()];
+  if (typeof window === "undefined") return [];
 
   try {
     const raw =
@@ -1126,10 +1143,10 @@ function loadRecords(): Semester[] {
       localStorage.getItem("esut-cgpa-records-v3") ||
       localStorage.getItem("esut-cgpa-records");
 
-    if (!raw) return [makeSemester()];
+    if (!raw) return [];
 
     const parsed = JSON.parse(raw) as Semester[];
-    if (!Array.isArray(parsed) || !parsed.length) return [makeSemester()];
+    if (!Array.isArray(parsed) || !parsed.length) return [];
 
     const seen = new Set<string>();
     const clean: Semester[] = [];
@@ -1142,8 +1159,8 @@ function loadRecords(): Semester[] {
       }
     }
 
-    return clean.length ? clean : [makeSemester()];
+    return clean;
   } catch {
-    return [makeSemester()];
+    return [];
   }
 }

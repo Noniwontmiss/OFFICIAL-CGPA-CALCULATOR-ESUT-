@@ -777,22 +777,6 @@ export default function Home() {
 
           <div className="flex items-center gap-2">
             <button
-              onClick={exportData}
-              aria-label="Export Data"
-              className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-bold text-slate-700 shadow-sm transition hover:bg-slate-50"
-            >
-              <Download size={16} />
-              <span className="hidden sm:inline">Export Data</span>
-            </button>
-            <button
-              onClick={onImportClick}
-              aria-label="Import Data"
-              className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-bold text-slate-700 shadow-sm transition hover:bg-slate-50"
-            >
-              <Upload size={16} />
-              <span className="hidden sm:inline">Import Data</span>
-            </button>
-            <button
               onClick={exportPDF}
               disabled={exporting}
               className="inline-flex items-center gap-2 rounded-xl bg-slate-950 px-3.5 py-2.5 text-sm font-bold text-white shadow-sm transition hover:bg-slate-800 disabled:opacity-60"
@@ -804,30 +788,56 @@ export default function Home() {
             </button>
             {!authLoading && (
               user ? (
-                <div className="hidden items-center gap-2 rounded-xl border border-slate-200 bg-white px-2.5 py-2 sm:flex">
-                  {user.user_metadata?.avatar_url ? (
-                    <img
-                      src={user.user_metadata.avatar_url}
-                      alt=""
-                      className="h-7 w-7 rounded-full object-cover"
-                    />
-                  ) : (
-                    <div className="grid h-7 w-7 place-items-center rounded-full bg-blue-100 text-xs font-black text-blue-700">
-                      {(user.user_metadata?.full_name || user.email || "U").charAt(0).toUpperCase()}
-                    </div>
-                  )}
-                  <span className="max-w-[120px] truncate text-xs font-bold text-slate-700">
-                    {user.user_metadata?.full_name || user.user_metadata?.name || user.email}
-                  </span>
-                  <button
-                    onClick={signOut}
-                    aria-label="Sign out"
-                    title="Sign out"
-                    className="grid h-7 w-7 place-items-center rounded-lg text-slate-500 transition hover:bg-slate-100 hover:text-slate-900"
-                  >
-                    <LogOut size={15} />
-                  </button>
-                </div>
+                <>
+                  <div className="hidden items-center gap-2 rounded-xl border border-slate-200 bg-white px-2.5 py-2 sm:flex">
+                    {user.user_metadata?.avatar_url ? (
+                      <img
+                        src={user.user_metadata.avatar_url}
+                        alt=""
+                        className="h-7 w-7 rounded-full object-cover"
+                      />
+                    ) : (
+                      <div className="grid h-7 w-7 place-items-center rounded-full bg-blue-100 text-xs font-black text-blue-700">
+                        {(user.user_metadata?.full_name || user.email || "U").charAt(0).toUpperCase()}
+                      </div>
+                    )}
+                    <span className="max-w-[120px] truncate text-xs font-bold text-slate-700">
+                      {user.user_metadata?.full_name || user.user_metadata?.name || user.email}
+                    </span>
+                    <button
+                      onClick={signOut}
+                      aria-label="Sign out"
+                      title="Sign out"
+                      className="grid h-7 w-7 place-items-center rounded-lg text-slate-500 transition hover:bg-slate-100 hover:text-slate-900"
+                    >
+                      <LogOut size={15} />
+                    </button>
+                  </div>
+
+                  <div className="flex items-center gap-1.5 sm:hidden">
+                    {user.user_metadata?.avatar_url ? (
+                      <div className="grid h-10 w-10 place-items-center rounded-xl border border-slate-200 bg-white p-1 shadow-sm">
+                        <img
+                          src={user.user_metadata.avatar_url}
+                          alt="Account"
+                          className="h-full w-full rounded-full object-cover"
+                        />
+                      </div>
+                    ) : (
+                      <div className="grid h-10 w-10 place-items-center rounded-xl border border-slate-200 bg-blue-50 text-sm font-black text-blue-700 shadow-sm">
+                        {(user.user_metadata?.full_name || user.email || "U").charAt(0).toUpperCase()}
+                      </div>
+                    )}
+                    <button
+                      onClick={signOut}
+                      aria-label="Sign out"
+                      title="Sign out"
+                      className="grid h-10 w-10 place-items-center rounded-xl border border-slate-200 bg-white text-slate-600 shadow-sm transition hover:bg-slate-50 hover:text-slate-900"
+                    >
+                      <LogOut size={18} />
+                    </button>
+                  </div>
+                </>
               ) : (
                 <button
                   onClick={signInWithGoogle}
@@ -1133,6 +1143,25 @@ export default function Home() {
               <FileText size={17} />
               {exporting ? "Creating report..." : "Export academic report"}
             </button>
+
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                onClick={exportData}
+                aria-label="Export Data"
+                className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3.5 text-sm font-bold text-slate-700 shadow-sm transition hover:bg-slate-50"
+              >
+                <Download size={17} />
+                Export Data
+              </button>
+              <button
+                onClick={onImportClick}
+                aria-label="Import Data"
+                className="inline-flex items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3.5 text-sm font-bold text-slate-700 shadow-sm transition hover:bg-slate-50"
+              >
+                <Upload size={17} />
+                Import Data
+              </button>
+            </div>
           </aside>
         </div>
       </div>

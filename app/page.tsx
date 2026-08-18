@@ -19,6 +19,7 @@ import {
   Sparkles,
   Trash2,
   Upload,
+  UserRound,
   X,
 } from "lucide-react";
 import {
@@ -832,7 +833,8 @@ export default function Home() {
                   onClick={signInWithGoogle}
                   className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-bold text-slate-700 shadow-sm transition hover:bg-slate-50"
                 >
-                  <LogIn size={16} />
+                  <UserRound size={16} className="sm:hidden" />
+                  <LogIn size={16} className="hidden sm:block" />
                   <span className="hidden sm:inline">Sign in</span>
                 </button>
               )

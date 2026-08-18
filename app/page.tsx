@@ -41,6 +41,24 @@ import {
 } from "../lib/calculator";
 
 const STORAGE_KEY = "esut-cgpa-records-v5";
+const LEGACY_STORAGE_KEYS = ["esut-cgpa-records-v3", "esut-cgpa-records"];
+
+function getUserStorageKey(userId: string) {
+  return `${STORAGE_KEY}:${userId}`;
+}
+
+function saveLocalRecords(records: Semester[], userId?: string | null) {
+  if (typeof window === "undefined") return;
+  const key = userId ? getUserStorageKey(userId) : STORAGE_KEY;
+  localStorage.setItem(key, JSON.stringify(records));
+}
+
+function clearLocalRecords(userId?: string | null) {
+  if (typeof window === "undefined") return;
+  localStorage.removeItem(STORAGE_KEY);
+  for (const key of LEGACY_STORAGE_KEYS) localStorage.removeItem(key);
+  if (userId) localStorage.removeItem(getUserStorageKey(userId));
+}
 
 export default function Home() {
   const [records, setRecords] = useState<Semester[]>(() => loadRecords());
@@ -92,6 +110,10 @@ export default function Home() {
       setUser(currentUser ?? null);
 
       if (currentUser) {
+        // Never display a previous user's in-memory records while this user's
+        // cloud data is being loaded. Guest data remains available in storage
+        // for the first-login migration handled by hydrateFromCloud().
+        setRecords([]);
         await hydrateFromCloud(currentUser.id, currentUser);
       } else {
         hydrationDoneRef.current = true;
@@ -109,10 +131,18 @@ export default function Home() {
       setUser(nextUser);
 
       if (event === "SIGNED_IN" && nextUser) {
+        setRecords([]);
+        hydrationDoneRef.current = false;
+        setCloudReady(false);
         void hydrateFromCloud(nextUser.id, nextUser);
       } else if (event === "SIGNED_OUT") {
+        if (saveTimerRef.current) {
+          window.clearTimeout(saveTimerRef.current);
+          saveTimerRef.current = null;
+        }
         hydrationDoneRef.current = true;
         setCloudReady(false);
+        setRecords([]);
       }
     });
 
@@ -125,6 +155,7 @@ export default function Home() {
 
   async function hydrateFromCloud(userId: string, currentUser: any) {
     const supabase = getSupabase();
+    const accountStorageKey = getUserStorageKey(userId);
 
     try {
       const { data: cloud, error } = await supabase
@@ -135,23 +166,41 @@ export default function Home() {
 
       if (error) throw error;
 
-      const localRecords = loadRecords();
+      // If the user signed out/switched accounts while this request was running,
+      // do not let the old request overwrite the new session's state.
+      const { data: { user: activeUser } } = await supabase.auth.getUser();
+      if (!activeUser || activeUser.id !== userId) return;
 
-      if (cloud?.records && Array.isArray(cloud.records) && cloud.records.length > 0) {
+      // Account-scoped storage is preferred. If this is the first login and there
+      // is old guest data, migrate that guest data into this account only.
+      const accountRecords = loadRecords(accountStorageKey);
+      const guestRecords = accountRecords.length > 0 ? accountRecords : loadRecords(STORAGE_KEY);
+      const hasCloudRecords = cloud?.records && Array.isArray(cloud.records);
+
+      if (hasCloudRecords) {
         const cleaned = validateAndCleanRecords(cloud.records);
         setRecords(cleaned);
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(cleaned));
-        localStorage.setItem("esut-cgpa-records", JSON.stringify(cleaned));
-      } else if (localRecords.length > 0) {
-        // First cloud login: preserve existing local records instead of overwriting them with empty data.
+        saveLocalRecords(cleaned, userId);
+      } else if (guestRecords.length > 0) {
+        // First cloud login: migrate guest records to this account only.
+        const cleaned = validateAndCleanRecords(guestRecords);
+        setRecords(cleaned);
+        saveLocalRecords(cleaned, userId);
+
         const { error: saveError } = await supabase
           .from("academic_records")
           .upsert(
-            { user_id: userId, records: localRecords, updated_at: new Date().toISOString() },
+            { user_id: userId, records: cleaned, updated_at: new Date().toISOString() },
             { onConflict: "user_id" }
           );
         if (saveError) throw saveError;
+
+        // Guest data has now been claimed by this account. Do not leave it
+        // available for the next account on the same browser.
+        clearLocalRecords();
       } else {
+        setRecords([]);
+        saveLocalRecords([], userId);
         await supabase
           .from("academic_records")
           .upsert(
@@ -201,8 +250,7 @@ export default function Home() {
   useEffect(() => {
     if (!hydrationDoneRef.current || !user || !cloudReady) return;
 
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
-    localStorage.setItem("esut-cgpa-records", JSON.stringify(records));
+    saveLocalRecords(records, user?.id);
 
     if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
 
@@ -248,13 +296,29 @@ export default function Home() {
   }
 
   async function signOut() {
+    const signedOutUserId = user?.id ?? null;
+
     try {
+      if (saveTimerRef.current) {
+        window.clearTimeout(saveTimerRef.current);
+        saveTimerRef.current = null;
+      }
+
       const supabase = getSupabase();
       const { error } = await supabase.auth.signOut();
       if (error) throw error;
+
+      // Remove this account's browser copy so its records cannot appear for
+      // another account on the same device. The Supabase cloud copy remains
+      // attached to signedOutUserId and will return when that user signs in again.
+      clearLocalRecords(signedOutUserId);
+      setRecords([]);
       setUser(null);
       setCloudReady(false);
       hydrationDoneRef.current = true;
+      setViewLevel("100L");
+      setViewSemester("First Semester");
+      setSelectedCourseId(null);
       flash("success", "Signed out successfully.");
     } catch (error) {
       console.error("Sign out failed:", error);
@@ -371,8 +435,7 @@ export default function Home() {
       return false;
     }
 
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
-    localStorage.setItem("esut-cgpa-records", JSON.stringify(records));
+    saveLocalRecords(records, user?.id);
     flash("success", "Academic record saved on this device.");
     return true;
   }
@@ -522,8 +585,7 @@ export default function Home() {
       if (!confirmed) return;
 
       setRecords(cleaned);
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(cleaned));
-      localStorage.setItem("esut-cgpa-records", JSON.stringify(cleaned));
+      saveLocalRecords(cleaned, user?.id);
 
       // Reset view to first available record or defaults
       if (cleaned.length > 0) {
@@ -675,8 +737,7 @@ export default function Home() {
       link.remove();
       window.setTimeout(() => URL.revokeObjectURL(url), 1500);
 
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
-      localStorage.setItem("esut-cgpa-records", JSON.stringify(records));
+      saveLocalRecords(records, user?.id);
       flash("success", "PDF exported successfully.");
     } catch (error) {
       console.error("PDF export failed", error);
@@ -693,8 +754,7 @@ export default function Home() {
     setViewLevel("100L");
     setViewSemester("First Semester");
     setSelectedCourseId(null);
-    localStorage.removeItem(STORAGE_KEY);
-    localStorage.removeItem("esut-cgpa-records");
+    clearLocalRecords(user?.id);
     flash("success", "Academic record reset.");
   }
 
@@ -1584,14 +1644,15 @@ function SummaryRow({
   );
 }
 
-function loadRecords(): Semester[] {
+function loadRecords(storageKey = STORAGE_KEY): Semester[] {
   if (typeof window === "undefined") return [];
 
   try {
     const raw =
-      localStorage.getItem(STORAGE_KEY) ||
-      localStorage.getItem("esut-cgpa-records-v3") ||
-      localStorage.getItem("esut-cgpa-records");
+      localStorage.getItem(storageKey) ||
+      (storageKey === STORAGE_KEY
+        ? localStorage.getItem("esut-cgpa-records-v3") || localStorage.getItem("esut-cgpa-records")
+        : null);
 
     if (!raw) return [];
 

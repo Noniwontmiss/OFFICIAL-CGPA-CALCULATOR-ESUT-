@@ -1526,7 +1526,7 @@ function CourseModal({
           <input
             value={course.title}
             onChange={(e) => setCourse({ ...course, title: e.target.value })}
-            placeholder="e.g. Computer Architecture"
+            placeholder="Computer Architecture"
             className="modal-input"
           />
         </Field>

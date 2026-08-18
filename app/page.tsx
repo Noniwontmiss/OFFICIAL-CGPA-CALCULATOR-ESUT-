@@ -1141,7 +1141,7 @@ export default function Home() {
               className="flex w-full items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 py-3.5 text-sm font-extrabold text-slate-800 shadow-sm hover:bg-slate-50 disabled:opacity-60"
             >
               <FileText size={17} />
-              {exporting ? "Creating report..." : "Export academic report"}
+              {exporting ? "Creating report..." : "Download academic report"}
             </button>
 
             <div className="grid grid-cols-2 gap-3">
@@ -1517,7 +1517,7 @@ function CourseModal({
             onChange={(e) =>
               setCourse({ ...course, code: e.target.value.toUpperCase() })
             }
-            placeholder="e.g. CPE 501"
+            placeholder="CEE 553"
             className="modal-input"
           />
         </Field>
